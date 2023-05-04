@@ -1,8 +1,8 @@
 use crate::{
-    expr::{Binary, Conditional, Expr, Grouping, Literal, Unary},
+    expr::{Assignment, Binary, Conditional, Expr, Grouping, Literal, Unary},
     stmt::Stmt,
     token::{Token, TokenType},
-    RloxError,
+    Rlox, RloxError,
 };
 
 pub struct Parser {
@@ -15,20 +15,101 @@ impl Parser {
         Self { current: 0, tokens }
     }
 
-    pub fn parse(&mut self) -> Result<Expr, RloxError> {
-        // let statements = Vec::new();
-        // while self.current < self.tokens.len() {
-        //     statements.push(self.declaration())
-        // }
-        Ok(self.expression()?)
+    pub fn parse(&mut self) -> Result<Vec<Stmt>, RloxError> {
+        let mut statements = Vec::new();
+        while !self.is_at_end() {
+            let statement = self.declaration();
+            match statement {
+                Ok(stmt) => statements.push(stmt),
+                Err(e) => {
+                    self.synchronize();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(statements)
     }
 
-    fn declaration(&self) -> Result<(), RloxError> {
-        Ok(())
+    fn declaration(&mut self) -> Result<Stmt, RloxError> {
+        if self.matches(TokenType::Var) {
+            return Ok(self.var_declaration()?);
+        }
+        self.statement()
+    }
+
+    // varDecl → "var" IDENTIFIER ( "=" expression )? ";" ;
+    fn var_declaration(&mut self) -> Result<Stmt, RloxError> {
+        let name = self.consume(TokenType::Identifier, "Expected identifier.")?;
+
+        let mut initializer: Option<Expr> = None;
+        if self.matches(TokenType::Equal) {
+            initializer = Some(self.expression()?);
+            self.consume(
+                TokenType::Semicolon,
+                "Expect ';' after variable declaration",
+            )?;
+        }
+
+        Ok(Stmt::Variable(crate::stmt::Variable { name, initializer }))
+    }
+
+    // statement → exprStmt | printStmt ;
+    fn statement(&mut self) -> Result<Stmt, RloxError> {
+        if self.matches(TokenType::Print) {
+            return self.print_stmt();
+        }
+        if self.matches(TokenType::LeftBrace) {
+            return self.block();
+        }
+        self.expression_stmt()
+    }
+
+    fn print_stmt(&mut self) -> Result<Stmt, RloxError> {
+        let value = self.expression()?;
+        self.consume(TokenType::Semicolon, "Expect ';' after value.")?;
+        Ok(Stmt::PrintStmt(value))
+    }
+
+    fn block(&mut self) -> Result<Stmt, RloxError> {
+        let mut statments = Vec::new();
+        while !self.is_at_end() && self.current_token().token_type != TokenType::RightBrace {
+            statments.push(self.declaration()?);
+        }
+
+        self.consume(TokenType::RightBrace, "Expect '}' after block.")?;
+        Ok(Stmt::Block(statments))
+    }
+
+    // exprStmt → expression ";" ;
+    fn expression_stmt(&mut self) -> Result<Stmt, RloxError> {
+        let expression = self.expression()?;
+        self.consume(TokenType::Semicolon, "Expect ';' after expression.")?;
+        Ok(Stmt::ExprStmt(expression))
     }
 
     fn expression(&mut self) -> Result<Expr, RloxError> {
-        Ok(self.conditional()?)
+        let expr = self.assignment()?;
+        Ok(expr)
+    }
+
+    // assignment → IDENTIFIER "=" assignment | equality ;
+    fn assignment(&mut self) -> Result<Expr, RloxError> {
+        let left = self.conditional()?;
+        if self.matches(TokenType::Equal) {
+            let equals = self.previous_token();
+            let value = self.assignment()?;
+
+            match left {
+                Expr::Variable(v) => {
+                    return Ok(Expr::Assignment(Assignment {
+                        name: v.name,
+                        value: Box::new(value),
+                    }))
+                }
+                _ => return Rlox::syntax_error(&equals.line, "Invalid assignment target."),
+            }
+        };
+        Ok(left)
     }
 
     fn conditional(&mut self) -> Result<Expr, RloxError> {
@@ -54,7 +135,7 @@ impl Parser {
     fn equality(&mut self) -> Result<Expr, RloxError> {
         let mut expression = self.comparison()?;
         while self.matches_one_of(vec![TokenType::BangEqual, TokenType::EqualEqual]) {
-            let operator = self.previous();
+            let operator = self.previous_token();
             let right = Box::new(self.comparison()?);
             expression = Expr::Binary(Binary {
                 left: Box::new(expression),
@@ -73,7 +154,7 @@ impl Parser {
             TokenType::Less,
             TokenType::LessEqual,
         ]) {
-            let operator = self.previous();
+            let operator = self.previous_token();
             let right = Box::new(self.term()?);
             expression = Expr::Binary(Binary {
                 left: Box::new(expression),
@@ -88,7 +169,7 @@ impl Parser {
     fn term(&mut self) -> Result<Expr, RloxError> {
         let mut expression = self.factor()?;
         while self.matches_one_of(vec![TokenType::Minus, TokenType::Plus]) {
-            let operator = self.previous();
+            let operator = self.previous_token();
             let right = Box::new(self.factor()?);
             expression = Expr::Binary(Binary {
                 left: Box::new(expression),
@@ -102,7 +183,7 @@ impl Parser {
     fn factor(&mut self) -> Result<Expr, RloxError> {
         let mut expression = self.unary()?;
         while self.matches_one_of(vec![TokenType::Slash, TokenType::Star]) {
-            let operator = self.previous();
+            let operator = self.previous_token();
             let right = Box::new(self.unary()?);
             expression = Expr::Binary(Binary {
                 left: Box::new(expression),
@@ -115,7 +196,7 @@ impl Parser {
     // unary → ( "!" | "-" ) unary | primary ;
     fn unary(&mut self) -> Result<Expr, RloxError> {
         if self.matches_one_of(vec![TokenType::Bang, TokenType::Minus]) {
-            let operator = self.previous();
+            let operator = self.previous_token();
             let right = Box::new(self.unary()?);
             let expression = Expr::Unary(Unary { right, operator });
             return Ok(expression);
@@ -126,7 +207,7 @@ impl Parser {
     // primary → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
     fn primary(&mut self) -> Result<Expr, RloxError> {
         if self.matches(TokenType::Number) {
-            match self.previous().literal {
+            match self.previous_token().literal {
                 Some(crate::token::Literal::Number(float)) => {
                     return Ok(Expr::Literal(Literal::Number(float)))
                 }
@@ -147,7 +228,7 @@ impl Parser {
             return Ok(Expr::Literal(Literal::False));
         }
         if self.matches(TokenType::String) {
-            match self.previous().literal {
+            match self.previous_token().literal {
                 Some(crate::token::Literal::String(string)) => {
                     return Ok(Expr::Literal(Literal::String(string)))
                 }
@@ -169,7 +250,12 @@ impl Parser {
                 expression: Box::new(expression),
             }));
         }
-        return Err(RloxError::SyntaxError("Expected expression.".to_string()));
+        if self.matches(TokenType::Identifier) {
+            return Ok(Expr::Variable(crate::expr::Variable {
+                name: self.previous_token(),
+            }));
+        }
+        return Rlox::syntax_error(&self.current_token().line, "Expected expression.");
     }
 
     fn matches(&mut self, token_type: TokenType) -> bool {
@@ -192,11 +278,54 @@ impl Parser {
         return false;
     }
 
-    fn advance(&mut self) {
-        self.current += 1;
+    fn consume(&mut self, token_type: TokenType, error_message: &str) -> Result<Token, RloxError> {
+        if self.check(token_type) {
+            return Ok(self.advance());
+        }
+        return Rlox::syntax_error(&self.current_token().line, error_message);
     }
 
-    fn previous(&self) -> Token {
+    fn check(&self, token_type: TokenType) -> bool {
+        if self.is_at_end() {
+            return false;
+        }
+        return self.current_token().token_type == token_type;
+    }
+
+    fn is_at_end(&self) -> bool {
+        if self.current_token().token_type == TokenType::Eof {
+            return true;
+        }
+        return false;
+    }
+
+    fn advance(&mut self) -> Token {
+        self.current += 1;
+        return self.previous_token();
+    }
+
+    fn current_token(&self) -> Token {
+        self.tokens[self.current].clone()
+    }
+
+    fn previous_token(&self) -> Token {
         self.tokens[self.current - 1].clone()
+    }
+
+    fn synchronize(&mut self) {
+        while self.current < self.tokens.len() {
+            match self.current_token().token_type {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => break,
+                _ => (),
+            }
+            self.advance();
+        }
     }
 }

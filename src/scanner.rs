@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     token::{Token, TokenType},
-    RloxError,
+    Rlox, RloxError,
 };
 
 pub struct Scanner<'a> {
@@ -119,9 +119,7 @@ impl<'a> Scanner<'a> {
                         loop {
                             // end of file
                             if iter.peek().is_none() {
-                                return Err(RloxError::SyntaxError(
-                                    "Unterminated string.".to_string(),
-                                ));
+                                return Rlox::syntax_error(&self.line, "Unterminted string.");
                             }
 
                             let next = iter.next_if(|&x| x != '"');
@@ -129,7 +127,11 @@ impl<'a> Scanner<'a> {
                             match next {
                                 Some(ch) => text.push(ch),
                                 None => {
-                                    self.add_token(TokenType::String, text);
+                                    self.add_token_with_literal(
+                                        TokenType::String,
+                                        text.clone(),
+                                        crate::token::Literal::String(text),
+                                    );
                                     // discard the '"'
                                     iter.next();
                                     break;
@@ -195,9 +197,7 @@ impl<'a> Scanner<'a> {
                                 None => self.add_token(TokenType::Identifier, text),
                             }
                         } else {
-                            return Err(RloxError::SyntaxError(
-                                "Unexpected character.".to_string(),
-                            ));
+                            return Rlox::syntax_error(&self.line, "Unexpected character.");
                         }
                     }
                 }

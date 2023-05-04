@@ -8,6 +8,7 @@ pub enum Expr {
     Unary(Unary),
     Conditional(Conditional),
     Variable(Variable),
+    Assignment(Assignment),
 }
 
 #[derive(Debug)]
@@ -46,5 +47,11 @@ pub struct Conditional {
 
 #[derive(Debug)]
 pub struct Variable {
-    pub name: String,
+    pub name: Token,
+}
+
+#[derive(Debug)]
+pub struct Assignment {
+    pub name: Token,
+    pub value: Box<Expr>,
 }
