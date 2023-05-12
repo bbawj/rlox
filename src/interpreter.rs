@@ -197,6 +197,15 @@ impl Interpreter {
                 )?;
                 Ok(())
             }
+            Stmt::If(statement) => {
+                let expr = self.interpret_expr(&statement.expr)?;
+                if self.is_truthy(expr) {
+                    self.interpret_stmt(*statement.then_stmt)?;
+                } else if let Some(else_stmt) = statement.else_stmt {
+                    self.interpret_stmt(*else_stmt)?;
+                }
+                Ok(())
+            }
         }
     }
 

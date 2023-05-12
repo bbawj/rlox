@@ -61,7 +61,27 @@ impl Parser {
         if self.matches(TokenType::LeftBrace) {
             return self.block();
         }
+        if self.matches(TokenType::If) {
+            return self.if_stmt();
+        }
         self.expression_stmt()
+    }
+
+    fn if_stmt(&mut self) -> Result<Stmt, RloxError> {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        let condition = self.expression()?;
+        self.consume(TokenType::RightParen, "Expect ')' after if condition.");
+
+        let then_stmt = Box::new(self.statement()?);
+        let mut else_stmt = None;
+        if self.matches(TokenType::Else) {
+            else_stmt = Some(Box::new(self.statement()?));
+        }
+        Ok(Stmt::If(crate::stmt::If {
+            expr: condition,
+            then_stmt,
+            else_stmt,
+        }))
     }
 
     fn print_stmt(&mut self) -> Result<Stmt, RloxError> {
