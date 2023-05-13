@@ -1,5 +1,5 @@
 use crate::{
-    expr::{Assignment, Binary, Conditional, Expr, Grouping, Literal, Unary},
+    expr::{Assignment, Binary, Conditional, Expr, Grouping, Literal, Logical, Unary},
     stmt::Stmt,
     token::{Token, TokenType},
     Rlox, RloxError,
@@ -44,11 +44,11 @@ impl Parser {
         let mut initializer: Option<Expr> = None;
         if self.matches(TokenType::Equal) {
             initializer = Some(self.expression()?);
-            self.consume(
-                TokenType::Semicolon,
-                "Expect ';' after variable declaration",
-            )?;
         }
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration",
+        )?;
 
         Ok(Stmt::Variable(crate::stmt::Variable { name, initializer }))
     }
@@ -64,13 +64,19 @@ impl Parser {
         if self.matches(TokenType::If) {
             return self.if_stmt();
         }
+        if self.matches(TokenType::While) {
+            return self.while_stmt();
+        }
+        if self.matches(TokenType::For) {
+            return self.for_stmt();
+        }
         self.expression_stmt()
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, RloxError> {
-        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.")?;
         let condition = self.expression()?;
-        self.consume(TokenType::RightParen, "Expect ')' after if condition.");
+        self.consume(TokenType::RightParen, "Expect ')' after if condition.")?;
 
         let then_stmt = Box::new(self.statement()?);
         let mut else_stmt = None;
@@ -82,6 +88,71 @@ impl Parser {
             then_stmt,
             else_stmt,
         }))
+    }
+
+    fn while_stmt(&mut self) -> Result<Stmt, RloxError> {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.")?;
+        let condition = self.expression()?;
+        self.consume(TokenType::RightParen, "Expect ')' after while condition.")?;
+        let body = self.statement()?;
+
+        Ok(Stmt::While(crate::stmt::While {
+            condition,
+            body: Box::new(body),
+        }))
+    }
+
+    fn for_stmt(&mut self) -> Result<Stmt, RloxError> {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'for'.")?;
+        let initializer: Option<Stmt>;
+        if self.matches(TokenType::Semicolon) {
+            initializer = None;
+        } else if self.matches(TokenType::Var) {
+            initializer = Some(self.var_declaration()?);
+        } else {
+            initializer = Some(self.expression_stmt()?);
+        }
+
+        let mut condition = None;
+        if !self.check(TokenType::Semicolon) {
+            condition = Some(self.expression()?);
+        }
+        self.consume(TokenType::Semicolon, "Expect ';' after loop condition.")?;
+
+        let mut increment = None;
+        if !self.check(TokenType::RightParen) {
+            increment = Some(self.expression()?);
+        }
+        self.consume(TokenType::RightParen, "Expect ')' after for clauses.")?;
+
+        let mut body = self.statement()?;
+
+        if let Some(inc) = increment {
+            body = match body {
+                Stmt::Block(mut statements) => {
+                    statements.push(Stmt::ExprStmt(inc));
+                    Stmt::Block(statements)
+                }
+                _ => Stmt::Block(vec![body, Stmt::ExprStmt(inc)]),
+            };
+        }
+
+        if condition.is_none() {
+            condition = Some(Expr::Literal(Literal::True));
+        }
+
+        if let Some(con) = condition {
+            body = Stmt::While(crate::stmt::While {
+                condition: con,
+                body: Box::new(body),
+            });
+        }
+
+        if let Some(init) = initializer {
+            body = Stmt::Block(vec![init, body]);
+        }
+
+        Ok(body)
     }
 
     fn print_stmt(&mut self) -> Result<Stmt, RloxError> {
@@ -114,7 +185,7 @@ impl Parser {
 
     // assignment → IDENTIFIER "=" assignment | equality ;
     fn assignment(&mut self) -> Result<Expr, RloxError> {
-        let left = self.conditional()?;
+        let left = self.or()?;
         if self.matches(TokenType::Equal) {
             let equals = self.previous_token();
             let value = self.assignment()?;
@@ -130,6 +201,34 @@ impl Parser {
             }
         };
         Ok(left)
+    }
+
+    fn or(&mut self) -> Result<Expr, RloxError> {
+        let mut expr = self.and()?;
+        while self.matches(TokenType::Or) {
+            let token = self.previous_token();
+            let right = Box::new(self.and()?);
+            expr = Expr::Logical(Logical {
+                token,
+                left: Box::new(expr),
+                right,
+            });
+        }
+        Ok(expr)
+    }
+
+    fn and(&mut self) -> Result<Expr, RloxError> {
+        let mut expr = self.conditional()?;
+        while self.matches(TokenType::And) {
+            let token = self.previous_token();
+            let right = Box::new(self.conditional()?);
+            expr = Expr::Logical(Logical {
+                token,
+                left: Box::new(expr),
+                right,
+            });
+        }
+        Ok(expr)
     }
 
     fn conditional(&mut self) -> Result<Expr, RloxError> {

@@ -54,7 +54,7 @@ impl Environment {
                 }
             }
         }
-        self.environment.insert(token.lexeme, value);
+        self.define(&token.lexeme, value);
         Ok(())
     }
 }
@@ -139,7 +139,7 @@ impl Interpreter {
             Expr::Unary(unary) => {
                 let right = self.interpret_expr(&unary.right)?;
                 match (&unary.operator.token_type, &right) {
-                    (TokenType::Bang, _) => Ok(Value::Bool(!self.is_truthy(right))),
+                    (TokenType::Bang, _) => Ok(Value::Bool(!self.is_truthy(&right))),
                     (TokenType::Minus, Value::Number(n)) => Ok(Value::Number(-n)),
                     _ => Rlox::syntax_error(
                         &unary.operator.line,
@@ -152,7 +152,7 @@ impl Interpreter {
             }
             Expr::Conditional(conditional) => {
                 let value = self.interpret_expr(&conditional.expression)?;
-                if self.is_truthy(value) {
+                if self.is_truthy(&value) {
                     Ok(self.interpret_expr(&conditional.then_part)?)
                 } else {
                     Ok(self.interpret_expr(&conditional.else_part)?)
@@ -168,14 +168,28 @@ impl Interpreter {
                     .assign(assignment.name.clone(), value.clone())?;
                 Ok(value)
             }
+            Expr::Logical(expr) => {
+                let left = self.interpret_expr(&expr.left)?;
+                if expr.token.token_type == TokenType::Or {
+                    if self.is_truthy(&left) {
+                        return Ok(left);
+                    }
+                } else {
+                    if !self.is_truthy(&left) {
+                        return Ok(left);
+                    }
+                }
+                let right = self.interpret_expr(&expr.right)?;
+                return Ok(right);
+            }
         }
     }
 
-    pub fn interpret_stmt(&mut self, statement: Stmt) -> Result<(), RloxError> {
+    pub fn interpret_stmt(&mut self, statement: &Stmt) -> Result<(), RloxError> {
         match statement {
             Stmt::Variable(v) => {
                 let mut value = Value::Nil;
-                if let Some(initializer) = v.initializer {
+                if let Some(initializer) = &v.initializer {
                     value = self.interpret_expr(&initializer)?;
                 }
                 self.environment.define(&v.name.lexeme, value);
@@ -191,46 +205,54 @@ impl Interpreter {
                 Ok(())
             }
             Stmt::Block(statements) => {
-                self.execute_block(
-                    statements,
-                    Environment::new(Some(Box::new(self.environment.clone()))),
-                )?;
+                self.execute_block(statements)?;
                 Ok(())
             }
             Stmt::If(statement) => {
                 let expr = self.interpret_expr(&statement.expr)?;
-                if self.is_truthy(expr) {
-                    self.interpret_stmt(*statement.then_stmt)?;
-                } else if let Some(else_stmt) = statement.else_stmt {
-                    self.interpret_stmt(*else_stmt)?;
+                if self.is_truthy(&expr) {
+                    self.interpret_stmt(&statement.then_stmt)?;
+                } else if let Some(else_stmt) = &statement.else_stmt {
+                    self.interpret_stmt(&else_stmt)?;
+                }
+                Ok(())
+            }
+            Stmt::While(while_stmt) => {
+                let mut condition = self.interpret_expr(&while_stmt.condition)?;
+                while self.is_truthy(&condition) {
+                    self.interpret_stmt(&while_stmt.body)?;
+                    condition = self.interpret_expr(&while_stmt.condition)?;
                 }
                 Ok(())
             }
         }
     }
 
-    fn execute_block(
-        &mut self,
-        statements: Vec<Stmt>,
-        environment: Environment,
-    ) -> Result<(), RloxError> {
-        let previous_env = self.environment.clone();
-        self.environment = environment;
+    fn execute_block(&mut self, statements: &Vec<Stmt>) -> Result<(), RloxError> {
+        self.environment = Environment::new(Some(Box::new(self.environment.clone())));
         for stmt in statements {
-            match self.interpret_stmt(stmt) {
+            match self.interpret_stmt(&stmt) {
                 Ok(_) => (),
                 Err(e) => {
-                    self.environment = previous_env;
+                    self.environment = *self
+                        .environment
+                        .enclosing
+                        .clone()
+                        .expect("Enclosing should contain original env");
                     return Err(e);
                 }
             }
         }
-        self.environment = previous_env;
+        self.environment = *self
+            .environment
+            .enclosing
+            .clone()
+            .expect("Enclosing should contain original env");
         Ok(())
     }
 
-    fn is_truthy(&self, value: Value) -> bool {
-        match value {
+    fn is_truthy(&self, value: &Value) -> bool {
+        match *value {
             Value::Bool(boolean) => boolean,
             Value::Nil => false,
             _ => true,

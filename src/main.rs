@@ -54,7 +54,7 @@ impl Rlox {
             Ok(statements) => {
                 // println!("{:?}", &statements);
                 for stmt in statements {
-                    println!("{:?}", interpreter.interpret_stmt(stmt));
+                    println!("{:?}", interpreter.interpret_stmt(&stmt));
                 }
             }
             Err(e) => println!("{}", e),
@@ -74,7 +74,7 @@ impl Rlox {
             match parser.parse() {
                 Ok(statements) => {
                     for stmt in statements {
-                        println!("{:?}", interpreter.interpret_stmt(stmt));
+                        println!("{:?}", interpreter.interpret_stmt(&stmt));
                     }
                 }
                 Err(e) => println!("{}", e),

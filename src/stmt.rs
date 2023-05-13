@@ -7,6 +7,7 @@ pub enum Stmt {
     PrintStmt(Expr),
     Block(Vec<Stmt>),
     If(If),
+    While(While),
 }
 
 #[derive(Debug)]
@@ -20,4 +21,10 @@ pub struct If {
     pub expr: Expr,
     pub then_stmt: Box<Stmt>,
     pub else_stmt: Option<Box<Stmt>>,
+}
+
+#[derive(Debug)]
+pub struct While {
+    pub condition: Expr,
+    pub body: Box<Stmt>,
 }

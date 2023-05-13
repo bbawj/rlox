@@ -9,6 +9,7 @@ pub enum Expr {
     Conditional(Conditional),
     Variable(Variable),
     Assignment(Assignment),
+    Logical(Logical),
 }
 
 #[derive(Debug)]
@@ -54,4 +55,11 @@ pub struct Variable {
 pub struct Assignment {
     pub name: Token,
     pub value: Box<Expr>,
+}
+
+#[derive(Debug)]
+pub struct Logical {
+    pub token: Token,
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
 }
