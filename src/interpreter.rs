@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{
     expr::{Expr, Literal},
@@ -13,19 +13,114 @@ pub enum Value {
     String(String),
     Bool(bool),
     Nil,
+    NativeFunction(NativeFunction),
+    LoxFunction(u64),
+}
+
+pub trait LoxCallable {
+    fn call(
+        &self,
+        interpreter: &mut Interpreter,
+        arguments: Vec<Value>,
+    ) -> Result<Value, RloxError>;
+    fn arity(&self) -> u8;
+}
+
+#[derive(Clone)]
+pub struct NativeFunction {
+    pub name: String,
+    pub arity: u8,
+    pub callable:
+        fn(interpreter: &mut Interpreter, arguments: Vec<Value>) -> Result<Value, RloxError>,
+}
+
+impl std::fmt::Debug for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl LoxCallable for NativeFunction {
+    fn call(
+        &self,
+        interpreter: &mut Interpreter,
+        arguments: Vec<Value>,
+    ) -> Result<Value, RloxError> {
+        (self.callable)(interpreter, arguments)
+    }
+
+    fn arity(&self) -> u8 {
+        self.arity
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoxFunction {
+    pub id: u64,
+    pub declaration: crate::stmt::Function,
+    pub closure: Rc<RefCell<Environment>>,
+}
+
+impl LoxFunction {
+    pub fn new(
+        id: u64,
+        declaration: crate::stmt::Function,
+        closure: &Rc<RefCell<Environment>>,
+    ) -> Self {
+        Self {
+            id,
+            declaration,
+            closure: Rc::clone(closure),
+        }
+    }
+}
+
+impl LoxCallable for LoxFunction {
+    fn call(
+        &self,
+        interpreter: &mut Interpreter,
+        arguments: Vec<Value>,
+    ) -> Result<Value, RloxError> {
+        let mut env = Environment::new(Some(Rc::clone(&self.closure)));
+        for (i, param) in self.declaration.params.iter().enumerate() {
+            env.define(&param.lexeme, arguments.get(i).unwrap().clone());
+        }
+        let x = match interpreter.execute_block(&self.declaration.body, env) {
+            Ok(_) => {
+                return Ok(Value::Nil);
+            }
+            Err(e) => match e {
+                RloxError::ReturnValue(v) => {
+                    return Ok(v);
+                }
+                _ => Err(e),
+            },
+        };
+        x
+    }
+
+    fn arity(&self) -> u8 {
+        self.declaration.params.len().try_into().unwrap()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Environment {
     environment: HashMap<String, Value>,
-    enclosing: Option<Box<Environment>>,
+    enclosing: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
-    pub fn new(enclosing: Option<Box<Environment>>) -> Self {
-        Self {
-            environment: HashMap::new(),
-            enclosing,
+    pub fn new(enclosing: Option<Rc<RefCell<Environment>>>) -> Self {
+        match enclosing {
+            Some(en) => Self {
+                environment: HashMap::new(),
+                enclosing: Some(en),
+            },
+            None => Self {
+                environment: HashMap::new(),
+                enclosing: None,
+            },
         }
     }
 
@@ -33,10 +128,12 @@ impl Environment {
         self.environment.insert(name.to_string(), value);
     }
 
-    pub fn get_variable(&self, identifier: &str) -> Option<&Value> {
-        let mut value = self.environment.get(identifier);
-        if value.is_none() && self.enclosing.is_some() {
-            value = self.enclosing.as_ref().unwrap().get_variable(identifier);
+    pub fn get_variable(&self, identifier: &str) -> Option<Value> {
+        let mut value = self.environment.get(identifier).cloned();
+        if value.is_none() {
+            if let Some(enc) = &self.enclosing {
+                value = enc.borrow().get_variable(identifier);
+            }
         }
 
         value
@@ -45,7 +142,7 @@ impl Environment {
     pub fn assign(&mut self, token: Token, value: Value) -> Result<(), RloxError> {
         if !self.environment.contains_key(&token.lexeme) {
             match &mut self.enclosing {
-                Some(e) => return e.assign(token, value),
+                Some(e) => return e.borrow_mut().assign(token, value),
                 None => {
                     return Rlox::syntax_error(
                         &token.line,
@@ -59,14 +156,35 @@ impl Environment {
     }
 }
 
+#[derive(Clone)]
 pub struct Interpreter {
-    environment: Environment,
+    globals: Rc<RefCell<Environment>>,
+    environment: Rc<RefCell<Environment>>,
+    counter: u64,
+    functions: HashMap<u64, LoxFunction>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
+        let globals = Rc::new(RefCell::new(Environment::new(None)));
+        globals.borrow_mut().define(
+            "clock",
+            Value::NativeFunction(NativeFunction {
+                name: "clock".to_string(),
+                arity: 0,
+                callable: |_, _| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap();
+                    Ok(Value::Number(now.as_millis() as f64))
+                },
+            }),
+        );
         Self {
-            environment: Environment::new(None),
+            globals: Rc::clone(&globals),
+            environment: Rc::new(RefCell::new(Environment::new(Some(globals)))),
+            counter: 0,
+            functions: HashMap::new(),
         }
     }
 
@@ -158,13 +276,14 @@ impl Interpreter {
                     Ok(self.interpret_expr(&conditional.else_part)?)
                 }
             }
-            Expr::Variable(v) => match self.environment.get_variable(&v.name.lexeme) {
+            Expr::Variable(v) => match self.environment.borrow().get_variable(&v.name.lexeme) {
                 Some(v) => Ok(v.clone()),
                 None => Rlox::runtime_error(&v.name.line, &format!("Undefined variable {:?}.", v)),
             },
             Expr::Assignment(assignment) => {
                 let value = self.interpret_expr(&assignment.value)?;
                 self.environment
+                    .borrow_mut()
                     .assign(assignment.name.clone(), value.clone())?;
                 Ok(value)
             }
@@ -182,6 +301,36 @@ impl Interpreter {
                 let right = self.interpret_expr(&expr.right)?;
                 return Ok(right);
             }
+            Expr::Call(call) => {
+                let callee = self.interpret_expr(&call.callee)?;
+                let mut arguments = Vec::new();
+                for argument in &call.arguments {
+                    arguments.push(self.interpret_expr(argument)?);
+                }
+
+                match callee {
+                    Value::NativeFunction(func) => func.call(self, arguments),
+                    Value::LoxFunction(func_id) => {
+                        let interpreter_clone = self.clone();
+                        let func =
+                            interpreter_clone.get_lox_function(&func_id, &call.paren.line)?;
+                        func.call(self, arguments)
+                    }
+                    _ => {
+                        return Rlox::syntax_error(
+                            &call.paren.line,
+                            "Can only call functions and classes.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fn get_lox_function(&self, func_id: &u64, line: &usize) -> Result<&LoxFunction, RloxError> {
+        match self.functions.get(&func_id) {
+            Some(func) => Ok(func),
+            None => return Rlox::syntax_error(line, "Function not defined yet."),
         }
     }
 
@@ -192,7 +341,7 @@ impl Interpreter {
                 if let Some(initializer) = &v.initializer {
                     value = self.interpret_expr(&initializer)?;
                 }
-                self.environment.define(&v.name.lexeme, value);
+                self.environment.borrow_mut().define(&v.name.lexeme, value);
                 Ok(())
             }
             Stmt::ExprStmt(expr) => {
@@ -205,7 +354,8 @@ impl Interpreter {
                 Ok(())
             }
             Stmt::Block(statements) => {
-                self.execute_block(statements)?;
+                let e = Environment::new(Some(self.environment.clone()));
+                self.execute_block(statements, e)?;
                 Ok(())
             }
             Stmt::If(statement) => {
@@ -225,29 +375,38 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Stmt::Function(function) => {
+                let func_id = self.alloc_id();
+                self.environment
+                    .borrow_mut()
+                    .define(&function.name.lexeme, Value::LoxFunction(func_id));
+                let func = LoxFunction::new(func_id, function.clone(), &self.environment);
+                self.functions.insert(func_id, func);
+                Ok(())
+            }
+            Stmt::Return(return_stmt) => {
+                let mut value = Value::Nil;
+                if let Some(value_expr) = &return_stmt.value {
+                    value = self.interpret_expr(&value_expr)?;
+                }
+                Err(RloxError::ReturnValue(value))
+            }
         }
     }
 
-    fn execute_block(&mut self, statements: &Vec<Stmt>) -> Result<(), RloxError> {
-        self.environment = Environment::new(Some(Box::new(self.environment.clone())));
+    fn execute_block(&mut self, statements: &Vec<Stmt>, env: Environment) -> Result<(), RloxError> {
+        let prev = Rc::clone(&self.environment);
+        self.environment = Rc::new(RefCell::new(env));
         for stmt in statements {
             match self.interpret_stmt(&stmt) {
                 Ok(_) => (),
                 Err(e) => {
-                    self.environment = *self
-                        .environment
-                        .enclosing
-                        .clone()
-                        .expect("Enclosing should contain original env");
+                    self.environment = prev;
                     return Err(e);
                 }
-            }
+            };
         }
-        self.environment = *self
-            .environment
-            .enclosing
-            .clone()
-            .expect("Enclosing should contain original env");
+        self.environment = prev;
         Ok(())
     }
 
@@ -257,5 +416,12 @@ impl Interpreter {
             Value::Nil => false,
             _ => true,
         }
+    }
+
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.counter;
+        self.counter += 1;
+
+        id
     }
 }

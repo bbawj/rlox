@@ -1,6 +1,6 @@
 use crate::{
     expr::{Assignment, Binary, Conditional, Expr, Grouping, Literal, Logical, Unary},
-    stmt::Stmt,
+    stmt::{Function, Stmt},
     token::{Token, TokenType},
     Rlox, RloxError,
 };
@@ -34,7 +34,48 @@ impl Parser {
         if self.matches(TokenType::Var) {
             return Ok(self.var_declaration()?);
         }
+        if self.matches(TokenType::Fun) {
+            return Ok(self.function("function")?);
+        }
         self.statement()
+    }
+
+    fn function(&mut self, kind: &str) -> Result<Stmt, RloxError> {
+        let name = self.consume(TokenType::Identifier, &format!("Expect {} name.", kind))?;
+        self.consume(
+            TokenType::LeftParen,
+            &format!("Expect '(' after {} name.", kind),
+        )?;
+        let mut params = Vec::new();
+        if !self.check(TokenType::RightParen) {
+            loop {
+                if params.len() >= 255 {
+                    return Err(RloxError::SyntaxError(
+                        "Cant have more than 255 parameters".to_string(),
+                    ));
+                }
+                params.push(self.consume(TokenType::Identifier, "Expect parameter name.")?);
+
+                if !self.matches(TokenType::Comma) {
+                    break;
+                }
+            }
+        };
+        self.consume(TokenType::RightParen, "Expect ')' after parameters.")?;
+
+        self.consume(
+            TokenType::LeftBrace,
+            &format!("Expect '{{' before {} body.", kind),
+        )?;
+        let body = self.block()?;
+        match body {
+            Stmt::Block(stmts) => Ok(Stmt::Function(Function {
+                name,
+                params,
+                body: stmts,
+            })),
+            _ => unreachable!(),
+        }
     }
 
     // varDecl → "var" IDENTIFIER ( "=" expression )? ";" ;
@@ -69,6 +110,9 @@ impl Parser {
         }
         if self.matches(TokenType::For) {
             return self.for_stmt();
+        }
+        if self.matches(TokenType::Return) {
+            return self.return_stmt();
         }
         self.expression_stmt()
     }
@@ -153,6 +197,16 @@ impl Parser {
         }
 
         Ok(body)
+    }
+
+    fn return_stmt(&mut self) -> Result<Stmt, RloxError> {
+        let keyword = self.previous_token();
+        let mut value = None;
+        if !self.check(TokenType::Semicolon) {
+            value = Some(self.expression()?);
+        }
+        self.consume(TokenType::Semicolon, "Expect ';' after return value.")?;
+        Ok(Stmt::Return(crate::stmt::Return { keyword, value }))
     }
 
     fn print_stmt(&mut self) -> Result<Stmt, RloxError> {
@@ -312,7 +366,7 @@ impl Parser {
         }
         Ok(expression)
     }
-    // unary → ( "!" | "-" ) unary | primary ;
+    // unary → ( "!" | "-" ) unary | call ;
     fn unary(&mut self) -> Result<Expr, RloxError> {
         if self.matches_one_of(vec![TokenType::Bang, TokenType::Minus]) {
             let operator = self.previous_token();
@@ -320,7 +374,36 @@ impl Parser {
             let expression = Expr::Unary(Unary { right, operator });
             return Ok(expression);
         }
-        Ok(self.primary()?)
+        Ok(self.call()?)
+    }
+
+    // call           → primary ( "(" arguments? ")" )* ;
+    fn call(&mut self) -> Result<Expr, RloxError> {
+        let mut callee = self.primary()?;
+        while self.matches(TokenType::LeftParen) {
+            let mut arguments = Vec::new();
+            if !self.check(TokenType::RightParen) {
+                loop {
+                    if arguments.len() >= 255 {
+                        return Rlox::syntax_error(
+                            &self.current_token().line,
+                            "Can't have more than 255 arguments.",
+                        );
+                    }
+                    arguments.push(self.expression()?);
+                    if !self.matches(TokenType::Comma) {
+                        break;
+                    }
+                }
+            }
+            let paren = self.consume(TokenType::RightParen, "Expect ')' after arguments.")?;
+            callee = Expr::Call(crate::expr::Call {
+                callee: Box::new(callee),
+                paren,
+                arguments,
+            });
+        }
+        Ok(callee)
     }
 
     // primary → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;

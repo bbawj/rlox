@@ -11,7 +11,7 @@ use std::{
     io::{self, BufReader, Read},
 };
 
-use interpreter::Interpreter;
+use interpreter::{Interpreter, Value};
 use parser::Parser;
 use scanner::Scanner;
 
@@ -20,6 +20,7 @@ pub enum RloxError {
     RuntimeError(String),
     SyntaxError(String),
     // InternalError(Box<dyn std::error::Error>),
+    ReturnValue(Value),
 }
 
 impl fmt::Display for RloxError {
@@ -27,6 +28,7 @@ impl fmt::Display for RloxError {
         match self {
             RloxError::RuntimeError(e) => write!(f, "{}", e),
             RloxError::SyntaxError(e) => write!(f, "{}", e),
+            RloxError::ReturnValue(e) => write!(f, "{:?}", e),
         }
     }
 }
