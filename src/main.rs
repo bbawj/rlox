@@ -1,5 +1,7 @@
 mod expr;
 mod interpreter;
+mod lox_class;
+mod lox_function;
 mod parser;
 mod resolver;
 mod scanner;

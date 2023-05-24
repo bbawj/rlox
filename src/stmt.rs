@@ -10,6 +10,7 @@ pub enum Stmt {
     While(While),
     Function(Function),
     Return(Return),
+    Class(Class),
 }
 
 #[derive(Debug, Clone)]
@@ -42,4 +43,10 @@ pub struct Function {
 pub struct Return {
     pub keyword: Token,
     pub value: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Class {
+    pub name: Token,
+    pub methods: Vec<Function>,
 }

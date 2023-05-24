@@ -11,6 +11,9 @@ pub enum Expr {
     Assignment(Assignment),
     Logical(Logical),
     Call(Call),
+    Get(Get),
+    Set(Set),
+    This(This),
 }
 
 #[derive(Debug, Clone)]
@@ -72,4 +75,22 @@ pub struct Call {
     // used to report error location
     pub paren: Token,
     pub arguments: Vec<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Get {
+    pub name: Token,
+    pub object: Box<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Set {
+    pub name: Token,
+    pub object: Box<Expr>,
+    pub value: Box<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct This {
+    pub var: Variable,
 }

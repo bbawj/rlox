@@ -6,11 +6,20 @@ use crate::{expr::Expr, stmt::Stmt, token::Token, Rlox, RloxError};
 enum FunctionType {
     None,
     Function,
+    Initializer,
+    Method,
+}
+
+#[derive(Clone)]
+enum ClassType {
+    None,
+    Class,
 }
 
 pub struct Resolver {
     scopes: Vec<HashMap<String, bool>>,
     current_function: FunctionType,
+    current_class: ClassType,
 }
 
 impl Resolver {
@@ -18,6 +27,7 @@ impl Resolver {
         Self {
             scopes: Vec::new(),
             current_function: FunctionType::None,
+            current_class: ClassType::None,
         }
     }
 
@@ -73,11 +83,42 @@ impl Resolver {
                             "Can't return from top-level code.",
                         )
                     }
-                    FunctionType::Function => {}
+                    FunctionType::Initializer => {
+                        return Rlox::syntax_error(
+                            &s.keyword.line,
+                            "Can't return a value from an initializer.",
+                        )
+                    }
+                    _ => {}
                 };
                 if let Some(v) = &mut s.value {
                     self.resolve_expr(v)?;
                 }
+                Ok(())
+            }
+            Stmt::Class(s) => {
+                let enclosing_class = &self.current_class.clone();
+                self.current_class = ClassType::Class;
+
+                self.declare(s.name.clone())?;
+                self.define(s.name.clone());
+
+                self.begin_scope();
+                if let Some(cur_scope) = self.get_cur_scope() {
+                    cur_scope.insert("this".to_string(), true);
+                }
+
+                for method in &mut s.methods {
+                    let mut declaration = FunctionType::Method;
+                    if method.name.lexeme == "init" {
+                        declaration = FunctionType::Initializer;
+                    }
+                    self.resolve_function(method, declaration)?;
+                }
+
+                self.end_scope();
+                self.current_class = enclosing_class.clone();
+
                 Ok(())
             }
         }
@@ -118,8 +159,8 @@ impl Resolver {
             }
             Expr::Assignment(e) => {
                 self.resolve_expr(&mut *e.value)?;
-                let name = &e.var.name.clone();
-                self.resolve_local(&mut e.var, name.clone());
+                let name = e.var.name.clone();
+                self.resolve_local(&mut e.var, name);
                 Ok(())
             }
             Expr::Logical(e) => {
@@ -132,6 +173,29 @@ impl Resolver {
                 for arg in &mut e.arguments {
                     self.resolve_expr(arg)?;
                 }
+                Ok(())
+            }
+            Expr::Get(e) => {
+                self.resolve_expr(&mut e.object)?;
+                Ok(())
+            }
+            Expr::Set(e) => {
+                self.resolve_expr(&mut e.value)?;
+                self.resolve_expr(&mut e.object)?;
+                Ok(())
+            }
+            Expr::This(e) => {
+                match self.current_class {
+                    ClassType::None => {
+                        return Rlox::syntax_error(
+                            &e.var.name.line,
+                            "Can't use 'this' outside of a class.",
+                        )
+                    }
+                    _ => (),
+                }
+                let name = e.var.name.clone();
+                self.resolve_local(&mut e.var, name);
                 Ok(())
             }
         }

@@ -1,6 +1,6 @@
 use crate::{
     expr::{Assignment, Binary, Conditional, Expr, Grouping, Literal, Logical, Unary},
-    stmt::{Function, Stmt},
+    stmt::{Class, Function, Stmt},
     token::{Token, TokenType},
     Rlox, RloxError,
 };
@@ -35,12 +35,29 @@ impl Parser {
             return Ok(self.var_declaration()?);
         }
         if self.matches(TokenType::Fun) {
-            return Ok(self.function("function")?);
+            return Ok(Stmt::Function(self.function("function")?));
+        }
+        if self.matches(TokenType::Class) {
+            return Ok(self.class()?);
         }
         self.statement()
     }
 
-    fn function(&mut self, kind: &str) -> Result<Stmt, RloxError> {
+    fn class(&mut self) -> Result<Stmt, RloxError> {
+        let name = self.consume(TokenType::Identifier, &format!("Expect class name."))?;
+        self.consume(TokenType::LeftBrace, "Expect '{' before class body.")?;
+
+        let mut methods: Vec<Function> = Vec::new();
+        while !self.check(TokenType::RightBrace) && !self.is_at_end() {
+            methods.push(self.function("method")?);
+        }
+
+        self.consume(TokenType::RightBrace, "Expect '}' after class body.")?;
+
+        Ok(Stmt::Class(Class { name, methods }))
+    }
+
+    fn function(&mut self, kind: &str) -> Result<Function, RloxError> {
         let name = self.consume(TokenType::Identifier, &format!("Expect {} name.", kind))?;
         self.consume(
             TokenType::LeftParen,
@@ -69,11 +86,11 @@ impl Parser {
         )?;
         let body = self.block()?;
         match body {
-            Stmt::Block(stmts) => Ok(Stmt::Function(Function {
+            Stmt::Block(stmts) => Ok(Function {
                 name,
                 params,
                 body: stmts,
-            })),
+            }),
             _ => unreachable!(),
         }
     }
@@ -251,6 +268,13 @@ impl Parser {
                         value: Box::new(value),
                     }))
                 }
+                Expr::Get(e) => {
+                    return Ok(Expr::Set(crate::expr::Set {
+                        name: e.name,
+                        object: e.object,
+                        value: Box::new(value),
+                    }))
+                }
                 _ => return Rlox::syntax_error(&equals.line, "Invalid assignment target."),
             }
         };
@@ -380,28 +404,39 @@ impl Parser {
     // call           → primary ( "(" arguments? ")" )* ;
     fn call(&mut self) -> Result<Expr, RloxError> {
         let mut callee = self.primary()?;
-        while self.matches(TokenType::LeftParen) {
-            let mut arguments = Vec::new();
-            if !self.check(TokenType::RightParen) {
-                loop {
-                    if arguments.len() >= 255 {
-                        return Rlox::syntax_error(
-                            &self.current_token().line,
-                            "Can't have more than 255 arguments.",
-                        );
-                    }
-                    arguments.push(self.expression()?);
-                    if !self.matches(TokenType::Comma) {
-                        break;
+        loop {
+            if self.matches(TokenType::LeftParen) {
+                let mut arguments = Vec::new();
+                if !self.check(TokenType::RightParen) {
+                    loop {
+                        if arguments.len() >= 255 {
+                            return Rlox::syntax_error(
+                                &self.current_token().line,
+                                "Can't have more than 255 arguments.",
+                            );
+                        }
+                        arguments.push(self.expression()?);
+                        if !self.matches(TokenType::Comma) {
+                            break;
+                        }
                     }
                 }
+                let paren = self.consume(TokenType::RightParen, "Expect ')' after arguments.")?;
+                callee = Expr::Call(crate::expr::Call {
+                    callee: Box::new(callee),
+                    paren,
+                    arguments,
+                });
+            } else if self.matches(TokenType::Dot) {
+                let name =
+                    self.consume(TokenType::Identifier, "Expect property name after '.'.")?;
+                callee = Expr::Get(crate::expr::Get {
+                    name,
+                    object: Box::new(callee),
+                });
+            } else {
+                break;
             }
-            let paren = self.consume(TokenType::RightParen, "Expect ')' after arguments.")?;
-            callee = Expr::Call(crate::expr::Call {
-                callee: Box::new(callee),
-                paren,
-                arguments,
-            });
         }
         Ok(callee)
     }
@@ -456,6 +491,14 @@ impl Parser {
             return Ok(Expr::Variable(crate::expr::Variable {
                 distance: None,
                 name: self.previous_token(),
+            }));
+        }
+        if self.matches(TokenType::This) {
+            return Ok(Expr::This(crate::expr::This {
+                var: crate::expr::Variable {
+                    distance: None,
+                    name: self.previous_token(),
+                },
             }));
         }
         return Rlox::syntax_error(&self.current_token().line, "Expected expression.");

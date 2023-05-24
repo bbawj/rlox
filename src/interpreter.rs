@@ -1,7 +1,9 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{
-    expr::{Expr, Literal},
+    expr::{Expr, Literal, Variable},
+    lox_class::{LoxClass, LoxInstance},
+    lox_function::{LoxCallable, LoxFunction, NativeFunction},
     stmt::Stmt,
     token::{Token, TokenType},
     Rlox, RloxError,
@@ -14,94 +16,9 @@ pub enum Value {
     Bool(bool),
     Nil,
     NativeFunction(NativeFunction),
-    LoxFunction(u64),
-}
-
-pub trait LoxCallable {
-    fn call(
-        &self,
-        interpreter: &mut Interpreter,
-        arguments: Vec<Value>,
-    ) -> Result<Value, RloxError>;
-    fn arity(&self) -> u8;
-}
-
-#[derive(Clone)]
-pub struct NativeFunction {
-    pub name: String,
-    pub arity: u8,
-    pub callable:
-        fn(interpreter: &mut Interpreter, arguments: Vec<Value>) -> Result<Value, RloxError>,
-}
-
-impl std::fmt::Debug for NativeFunction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl LoxCallable for NativeFunction {
-    fn call(
-        &self,
-        interpreter: &mut Interpreter,
-        arguments: Vec<Value>,
-    ) -> Result<Value, RloxError> {
-        (self.callable)(interpreter, arguments)
-    }
-
-    fn arity(&self) -> u8 {
-        self.arity
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct LoxFunction {
-    pub id: u64,
-    pub declaration: crate::stmt::Function,
-    pub closure: Rc<RefCell<Environment>>,
-}
-
-impl LoxFunction {
-    pub fn new(
-        id: u64,
-        declaration: crate::stmt::Function,
-        closure: &Rc<RefCell<Environment>>,
-    ) -> Self {
-        Self {
-            id,
-            declaration,
-            closure: Rc::clone(closure),
-        }
-    }
-}
-
-impl LoxCallable for LoxFunction {
-    fn call(
-        &self,
-        interpreter: &mut Interpreter,
-        arguments: Vec<Value>,
-    ) -> Result<Value, RloxError> {
-        let mut env = Environment::new(Some(Rc::clone(&self.closure)));
-        for (i, param) in self.declaration.params.iter().enumerate() {
-            env.define(&param.lexeme, arguments.get(i).unwrap().clone());
-        }
-        let x = match interpreter.execute_block(&self.declaration.body, env) {
-            Ok(_) => {
-                return Ok(Value::Nil);
-            }
-            Err(e) => match e {
-                RloxError::ReturnValue(v) => {
-                    return Ok(v);
-                }
-                _ => Err(e),
-            },
-        };
-        x
-    }
-
-    fn arity(&self) -> u8 {
-        self.declaration.params.len().try_into().unwrap()
-    }
+    LoxFunction(LoxFunction),
+    LoxClass(LoxClass),
+    LoxInstance(Rc<LoxInstance>),
 }
 
 #[derive(Debug, Clone)]
@@ -176,8 +93,6 @@ pub struct Interpreter {
     globals: Rc<RefCell<Environment>>,
     environment: Rc<RefCell<Environment>>,
     counter: u64,
-    functions: HashMap<u64, LoxFunction>,
-    locals: HashMap<Expr, u64>,
 }
 
 impl Interpreter {
@@ -199,10 +114,7 @@ impl Interpreter {
         Self {
             globals: Rc::clone(&globals),
             environment: Rc::clone(&globals),
-            // environment: Rc::new(RefCell::new(Environment::new(None))),
             counter: 0,
-            functions: HashMap::new(),
-            locals: HashMap::new(),
         }
     }
 
@@ -294,25 +206,7 @@ impl Interpreter {
                     Ok(self.interpret_expr(&conditional.else_part)?)
                 }
             }
-            Expr::Variable(v) => {
-                let distance = v.distance;
-                match distance {
-                    Some(d) => match self.environment.borrow().get_variable_at(&v.name.lexeme, d) {
-                        Some(v) => Ok(v.clone()),
-                        None => Rlox::runtime_error(
-                            &v.name.line,
-                            &format!("Undefined variable {:?}.", v),
-                        ),
-                    },
-                    None => match self.globals.borrow().get_variable(&v.name.lexeme) {
-                        Some(v) => Ok(v),
-                        None => Rlox::runtime_error(
-                            &v.name.line,
-                            &format!("Undefined variable {:?}.", v),
-                        ),
-                    },
-                }
-            }
+            Expr::Variable(v) => Ok(self.lookup_variable(v.clone())?),
             Expr::Assignment(assignment) => {
                 let value = self.interpret_expr(&assignment.value)?;
                 match assignment.var.distance {
@@ -351,12 +245,8 @@ impl Interpreter {
 
                 match callee {
                     Value::NativeFunction(func) => func.call(self, arguments),
-                    Value::LoxFunction(func_id) => {
-                        let interpreter_clone = self.clone();
-                        let func =
-                            interpreter_clone.get_lox_function(&func_id, &call.paren.line)?;
-                        func.call(self, arguments)
-                    }
+                    Value::LoxFunction(func) => func.call(self, arguments),
+                    Value::LoxClass(class) => class.call(self, arguments),
                     _ => {
                         return Rlox::syntax_error(
                             &call.paren.line,
@@ -365,13 +255,25 @@ impl Interpreter {
                     }
                 }
             }
-        }
-    }
-
-    fn get_lox_function(&self, func_id: &u64, line: &usize) -> Result<&LoxFunction, RloxError> {
-        match self.functions.get(&func_id) {
-            Some(func) => Ok(func),
-            None => return Rlox::syntax_error(line, "Function not defined yet."),
+            Expr::Get(e) => {
+                let object = self.interpret_expr(&e.object)?;
+                match object {
+                    Value::LoxInstance(i) => i.get(e.name.clone()),
+                    _ => Rlox::runtime_error(&e.name.line, "Only instances have properties."),
+                }
+            }
+            Expr::Set(e) => {
+                let object = self.interpret_expr(&e.object)?;
+                match object {
+                    Value::LoxInstance(i) => {
+                        let value = self.interpret_expr(&e.value)?;
+                        i.set(e.name.clone(), value);
+                        Ok(Value::Nil)
+                    }
+                    _ => Rlox::runtime_error(&e.name.line, "Only instances have properties."),
+                }
+            }
+            Expr::This(e) => Ok(self.lookup_variable(e.var.clone())?),
         }
     }
 
@@ -417,12 +319,10 @@ impl Interpreter {
                 Ok(())
             }
             Stmt::Function(function) => {
-                let func_id = self.alloc_id();
+                let func = LoxFunction::new(function.clone(), &self.environment, false);
                 self.environment
                     .borrow_mut()
-                    .define(&function.name.lexeme, Value::LoxFunction(func_id));
-                let func = LoxFunction::new(func_id, function.clone(), &self.environment);
-                self.functions.insert(func_id, func);
+                    .define(&function.name.lexeme, Value::LoxFunction(func));
                 Ok(())
             }
             Stmt::Return(return_stmt) => {
@@ -432,10 +332,35 @@ impl Interpreter {
                 }
                 Err(RloxError::ReturnValue(value))
             }
+            Stmt::Class(s) => {
+                let mut methods = HashMap::new();
+
+                for method in &s.methods {
+                    let func = LoxFunction::new(
+                        method.clone(),
+                        &self.environment,
+                        method.name.lexeme == "init",
+                    );
+                    methods.insert(method.name.lexeme.clone(), func);
+                }
+
+                let class = LoxClass {
+                    name: s.name.lexeme.clone(),
+                    methods,
+                };
+                self.environment
+                    .borrow_mut()
+                    .define(&s.name.lexeme, Value::LoxClass(class));
+                Ok(())
+            }
         }
     }
 
-    fn execute_block(&mut self, statements: &Vec<Stmt>, env: Environment) -> Result<(), RloxError> {
+    pub fn execute_block(
+        &mut self,
+        statements: &Vec<Stmt>,
+        env: Environment,
+    ) -> Result<(), RloxError> {
         let prev = Rc::clone(&self.environment);
         self.environment = Rc::new(RefCell::new(env));
         for stmt in statements {
@@ -449,6 +374,28 @@ impl Interpreter {
         }
         self.environment = prev;
         Ok(())
+    }
+
+    fn lookup_variable(&self, var: Variable) -> Result<Value, RloxError> {
+        let distance = var.distance;
+        match distance {
+            Some(d) => match self
+                .environment
+                .borrow()
+                .get_variable_at(&var.name.lexeme, d)
+            {
+                Some(v) => Ok(v.clone()),
+                None => {
+                    Rlox::runtime_error(&var.name.line, &format!("Undefined variable {:?}.", var))
+                }
+            },
+            None => match self.globals.borrow().get_variable(&var.name.lexeme) {
+                Some(v) => Ok(v),
+                None => {
+                    Rlox::runtime_error(&var.name.line, &format!("Undefined variable {:?}.", var))
+                }
+            },
+        }
     }
 
     fn is_truthy(&self, value: &Value) -> bool {
