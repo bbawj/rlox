@@ -49,12 +49,13 @@ pub struct Conditional {
 
 #[derive(Debug, Clone)]
 pub struct Variable {
+    pub distance: Option<u64>,
     pub name: Token,
 }
 
 #[derive(Debug, Clone)]
 pub struct Assignment {
-    pub name: Token,
+    pub var: Variable,
     pub value: Box<Expr>,
 }
 

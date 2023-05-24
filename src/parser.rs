@@ -247,7 +247,7 @@ impl Parser {
             match left {
                 Expr::Variable(v) => {
                     return Ok(Expr::Assignment(Assignment {
-                        name: v.name,
+                        var: v,
                         value: Box::new(value),
                     }))
                 }
@@ -454,6 +454,7 @@ impl Parser {
         }
         if self.matches(TokenType::Identifier) {
             return Ok(Expr::Variable(crate::expr::Variable {
+                distance: None,
                 name: self.previous_token(),
             }));
         }

@@ -1,6 +1,7 @@
 mod expr;
 mod interpreter;
 mod parser;
+mod resolver;
 mod scanner;
 mod stmt;
 mod token;
@@ -13,6 +14,7 @@ use std::{
 
 use interpreter::{Interpreter, Value};
 use parser::Parser;
+use resolver::Resolver;
 use scanner::Scanner;
 
 #[derive(Debug)]
@@ -33,6 +35,8 @@ impl fmt::Display for RloxError {
     }
 }
 
+impl std::error::Error for RloxError {}
+
 // impl From<<f64 as FromStr>::Err> for RloxError {
 //     fn from(value: <f64 as FromStr>::Err) -> Self {
 //         RloxError::InternalError(value)
@@ -42,7 +46,7 @@ impl fmt::Display for RloxError {
 pub struct Rlox {}
 
 impl Rlox {
-    pub fn run_file(path: &str) -> Result<(), io::Error> {
+    pub fn run_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut contents = String::new();
@@ -51,12 +55,20 @@ impl Rlox {
         scanner.scan_token().unwrap();
 
         let mut parser = Parser::new(scanner.tokens);
+        let mut resolver = Resolver::new();
         let mut interpreter = Interpreter::new();
         match parser.parse() {
-            Ok(statements) => {
+            Ok(mut statements) => {
                 // println!("{:?}", &statements);
-                for stmt in statements {
-                    println!("{:?}", interpreter.interpret_stmt(&stmt));
+                match resolver.resolve_stmts(&mut statements) {
+                    Ok(_) => {
+                        for stmt in statements {
+                            interpreter.interpret_stmt(&stmt)?;
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}", e);
+                    }
                 }
             }
             Err(e) => println!("{}", e),

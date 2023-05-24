@@ -128,21 +128,32 @@ impl Environment {
         self.environment.insert(name.to_string(), value);
     }
 
-    pub fn get_variable(&self, identifier: &str) -> Option<Value> {
-        let mut value = self.environment.get(identifier).cloned();
-        if value.is_none() {
+    pub fn get_variable_at(&self, identifier: &str, distance: u64) -> Option<Value> {
+        if distance == 0 {
+            return self.get_variable(identifier).clone();
+        } else {
             if let Some(enc) = &self.enclosing {
-                value = enc.borrow().get_variable(identifier);
+                return enc.borrow().get_variable_at(identifier, distance - 1);
             }
+            None
         }
-
-        value
     }
 
-    pub fn assign(&mut self, token: Token, value: Value) -> Result<(), RloxError> {
-        if !self.environment.contains_key(&token.lexeme) {
+    pub fn get_variable(&self, identifier: &str) -> Option<Value> {
+        return self.environment.get(identifier).cloned();
+    }
+
+    pub fn assign_at(
+        &mut self,
+        token: Token,
+        value: Value,
+        distance: u64,
+    ) -> Result<(), RloxError> {
+        if distance == 0 {
+            self.assign(token, value)?;
+        } else {
             match &mut self.enclosing {
-                Some(e) => return e.borrow_mut().assign(token, value),
+                Some(e) => return e.borrow_mut().assign_at(token, value, distance - 1),
                 None => {
                     return Rlox::syntax_error(
                         &token.line,
@@ -151,6 +162,10 @@ impl Environment {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn assign(&mut self, token: Token, value: Value) -> Result<(), RloxError> {
         self.define(&token.lexeme, value);
         Ok(())
     }
@@ -162,6 +177,7 @@ pub struct Interpreter {
     environment: Rc<RefCell<Environment>>,
     counter: u64,
     functions: HashMap<u64, LoxFunction>,
+    locals: HashMap<Expr, u64>,
 }
 
 impl Interpreter {
@@ -182,9 +198,11 @@ impl Interpreter {
         );
         Self {
             globals: Rc::clone(&globals),
-            environment: Rc::new(RefCell::new(Environment::new(Some(globals)))),
+            environment: Rc::clone(&globals),
+            // environment: Rc::new(RefCell::new(Environment::new(None))),
             counter: 0,
             functions: HashMap::new(),
+            locals: HashMap::new(),
         }
     }
 
@@ -276,15 +294,38 @@ impl Interpreter {
                     Ok(self.interpret_expr(&conditional.else_part)?)
                 }
             }
-            Expr::Variable(v) => match self.environment.borrow().get_variable(&v.name.lexeme) {
-                Some(v) => Ok(v.clone()),
-                None => Rlox::runtime_error(&v.name.line, &format!("Undefined variable {:?}.", v)),
-            },
+            Expr::Variable(v) => {
+                let distance = v.distance;
+                match distance {
+                    Some(d) => match self.environment.borrow().get_variable_at(&v.name.lexeme, d) {
+                        Some(v) => Ok(v.clone()),
+                        None => Rlox::runtime_error(
+                            &v.name.line,
+                            &format!("Undefined variable {:?}.", v),
+                        ),
+                    },
+                    None => match self.globals.borrow().get_variable(&v.name.lexeme) {
+                        Some(v) => Ok(v),
+                        None => Rlox::runtime_error(
+                            &v.name.line,
+                            &format!("Undefined variable {:?}.", v),
+                        ),
+                    },
+                }
+            }
             Expr::Assignment(assignment) => {
                 let value = self.interpret_expr(&assignment.value)?;
-                self.environment
-                    .borrow_mut()
-                    .assign(assignment.name.clone(), value.clone())?;
+                match assignment.var.distance {
+                    Some(d) => self.environment.borrow_mut().assign_at(
+                        assignment.var.name.clone(),
+                        value.clone(),
+                        d,
+                    )?,
+                    None => self
+                        .globals
+                        .borrow_mut()
+                        .assign(assignment.var.name.clone(), value.clone())?,
+                }
                 Ok(value)
             }
             Expr::Logical(expr) => {
